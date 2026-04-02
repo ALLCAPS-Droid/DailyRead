@@ -25,10 +25,12 @@ def get_articles_and_update_history():
         try:
             list_url = "https://saduck.top/my/dailyRead.html"
             print(f"正在访问文章列表页……")
-            page.goto(list_url, wait_until="networkidle", timeout=30000)
+            # 使用 domcontentloaded 加快访问速度，防止超时
+            page.goto(list_url, wait_until="domcontentloaded", timeout=60000)
             
             page.wait_for_selector(".article-meta", timeout=15000)
 
+            # 获取所有卡片的基本信息
             cards_info = page.evaluate("""
                 () => {
                     let results = [];
@@ -55,16 +57,18 @@ def get_articles_and_update_history():
                     
                 print(f"正在抓取新文章: {unique_guid}")
                 try:
-                    # 🌟 终极必杀技：不管三七二十一，每次抓新文章前，强制刷新网页回到列表页！
-                    page.goto(list_url, wait_until="networkidle")
-                    page.wait_for_selector(".article-meta", timeout=10000)
+                    # 确保弹窗全关掉（如果有的话）
+                    page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
+                    page.wait_for_timeout(500)
 
-                    # 网页刚刷新完，列表非常干净，根据索引点击绝不会错
+                    # 点击列表上的卡片
                     page.evaluate(f"document.querySelectorAll('.article-meta')[{info['index']}].parentElement.click()")
                     
-                    # 等待文章渲染
-                    page.wait_for_timeout(3000)
+                    # 等待正文容器渲染出来
+                    page.wait_for_selector('.article-container', timeout=10000)
+                    page.wait_for_timeout(1000)
                     
+                    # 提取排版好的 HTML
                     detail = page.evaluate("""
                         () => {
                             let titleEl = document.querySelector('h1') || document.querySelector('.title');
@@ -74,16 +78,17 @@ def get_articles_and_update_history():
                             let source = metaSpans.length >= 1 ? metaSpans[0].innerText.trim() : '';
                             let theme = metaSpans.length >= 2 ? metaSpans[1].innerText.trim() : '';
                             
-                            let contentEl = document.querySelector('.answer-content') || document.querySelector('.article-container .content') || document.querySelector('.vp-doc');
+                            // 准确锁定正文，避开导航栏
+                            let contentEl = document.querySelector('.answer-content') || document.querySelector('.article-container .content');
                             let contentHtml = '';
                             
                             if(contentEl) {
                                 let clone = contentEl.cloneNode(true);
-                                let junk = ['svg', '.dialog-overlay', '.back-button', '.el-pagination', '.meta-info', '.close-btn'];
+                                let junk = ['svg', '.dialog-overlay', '.back-button', '.el-pagination', '.meta-info', '.close-btn', '.vitepress-backTop-main'];
                                 junk.forEach(s => clone.querySelectorAll(s).forEach(el => el.remove()));
                                 
                                 clone.querySelectorAll('div, p').forEach(el => {
-                                    if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题') || el.innerText.includes('商业盈利')) el.remove();
+                                    if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题')) el.remove();
                                 });
                                 contentHtml = clone.innerHTML.trim();
                             }
@@ -98,12 +103,12 @@ def get_articles_and_update_history():
                         <div style="border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px;">
                             <table width="100%" style="border: none;">
                                 <tr>
-                                    <td align="left" style="color: #666;">{detail['source']}</td>
-                                    <td align="right" style="color: #666;">{detail['theme']}</td>
+                                    <td align="left" style="color: #666; font-size: 14px;">{detail['source']}</td>
+                                    <td align="right" style="color: #666; font-size: 14px;">{detail['theme']}</td>
                                 </tr>
                             </table>
                         </div>
-                        <div style="line-height: 1.8;">{detail['contentHtml']}</div>
+                        <div style="line-height: 1.8; font-size: 16px;">{detail['contentHtml']}</div>
                         """
                         
                         history.insert(0, {
@@ -115,6 +120,21 @@ def get_articles_and_update_history():
                         })
                         new_items_count += 1
                         existing_guids.add(unique_guid)
+                    
+                    # 🌟 破局关键：抓完文章后，模拟点击底部的“返回列表”按钮！
+                    page.evaluate("""
+                        () => {
+                            let btns = document.querySelectorAll('.back-button');
+                            for(let b of btns) {
+                                if(b.innerText.includes('返回列表')) {
+                                    b.click();
+                                    break;
+                                }
+                            }
+                        }
+                    """)
+                    # 等待列表页重新出现，再进行下一次循环
+                    page.wait_for_selector('.article-meta', timeout=10000)
 
                 except Exception as inner_e:
                     print(f"处理单篇异常: {inner_e}")
