@@ -1,9 +1,16 @@
 name: Auto Update RSS
 
 on:
+  workflow_dispatch:    # 保留这个，允许你在网页上手动点击运行
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
+    # 对应北京时间 06:30 (UTC 时间 昨天 22:30)
+    - cron: '30 22 * * *'
+    
+    # 对应北京时间 09:30 (UTC 时间 01:30)
+    - cron: '30 1 * * *'
+    
+    # 对应北京时间 12:30 (UTC 时间 04:30)
+    - cron: '30 4 * * *'
 
 jobs:
   run-bot:
