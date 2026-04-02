@@ -1,4 +1,6 @@
 import datetime
+import json
+import os
 from playwright.sync_api import sync_playwright
 
 def get_content():
@@ -9,27 +11,21 @@ def get_content():
         
         try:
             print("正在访问目标网页……")
-            # 访问网页，并等待网络请求基本完成
             page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
             
             print("等待正文渲染……")
-            # 关键修复：不要等 .vp-doc 容器，而是等容器里的实质性内容（如段落 p 标签）加载出来
             try:
                 page.wait_for_selector(".vp-doc p", timeout=10000)
             except:
-                # 如果连 p 标签都没有，强制等 3 秒让 JS 跑完
                 page.wait_for_timeout(3000)
             
-            # 放弃寻找 h1，直接获取网页原生 title（例如 "每日晨读 | SaDuck - 公考知识库"）
             raw_title = page.title()
             title = raw_title.split('|')[0].strip() if '|' in raw_title else "每日晨读"
                 
-            # 提取 HTML 正文
             content = page.locator(".vp-doc").inner_html()
             
-            # 防御性检查：如果抓到的内容太短，说明没加载出真实内容
             if not content or len(content.strip()) < 50:
-                print("错误：抓取到的正文太短或为空，页面可能未完全加载。")
+                print("错误：抓取到的正文太短或为空。")
                 return None, None
             
             print(f"抓取成功！标题：{title}")
@@ -42,29 +38,66 @@ def get_content():
             browser.close()
 
 def make_rss(title, content):
-    print("正在生成 atom.xml 文件……")
+    print("正在处理历史记录并生成 RSS……")
     now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
     today = datetime.date.today().isoformat()
+    full_title = f"{today} - {title}"
+    guid_link = f"https://saduck.top/my/dailyRead.html?date={today}"
     
+    # 1. 读取历史记录
+    history_file = "history.json"
+    history = []
+    if os.path.exists(history_file):
+        with open(history_file, "r", encoding="utf-8") as f:
+            history = json.load(f)
+            
+    # 2. 检查今天的内容是否已经抓过（防止重复运行产生重复文章）
+    is_duplicate = False
+    if len(history) > 0 and history[0]['title'] == full_title:
+        is_duplicate = True
+        
+    # 3. 如果是新文章，插入到列表最前面
+    if not is_duplicate:
+        history.insert(0, {
+            "title": full_title,
+            "link": guid_link,
+            "description": content,
+            "pubDate": now,
+            "guid": guid_link
+        })
+        
+    # 4. 只保留最近 15 篇文章的历史
+    history = history[:30]
+    
+    # 5. 把更新后的历史保存起来
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+    # 6. 拼装最终的 XML
+    items_xml = ""
+    for item in history:
+        items_xml += f"""
+  <item>
+    <title><![CDATA[{item['title']}]]></title>
+    <link>{item['link']}</link>
+    <description><![CDATA[{item['description']}]]></description>
+    <pubDate>{item['pubDate']}</pubDate>
+    <guid>{item['guid']}</guid>
+  </item>"""
+
     rss_template = f"""<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0">
 <channel>
   <title>SaDuck 每日晨读</title>
   <link>https://saduck.top/my/dailyRead.html</link>
   <description>自动抓取的公考晨读内容</description>
-  <lastBuildDate>{now}</lastBuildDate>
-  <item>
-    <title><![CDATA[{today} - {title}]]></title>
-    <link>https://saduck.top/my/dailyRead.html?date={today}</link>
-    <description><![CDATA[{content}]]></description>
-    <pubDate>{now}</pubDate>
-    <guid>https://saduck.top/my/dailyRead.html?date={today}</guid>
-  </item>
+  <lastBuildDate>{now}</lastBuildDate>{items_xml}
 </channel>
 </rss>"""
+
     with open("atom.xml", "w", encoding="utf-8") as f:
         f.write(rss_template)
-    print("文件写入完成！")
+    print(f"文件写入完成！当前源中共有 {len(history)} 篇文章。")
 
 if __name__ == "__main__":
     t, c = get_content()
