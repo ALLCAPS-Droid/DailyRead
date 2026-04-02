@@ -1,56 +1,37 @@
-import requests
-import re
-import json
 import datetime
-import os
+from playwright.sync_api import sync_playwright
 
 def get_content():
-    base_url = "https://saduck.top"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    try:
-        print("正在访问主页……")
-        html_resp = requests.get(f"{base_url}/my/dailyRead.html", headers=headers, timeout=30)
-        html = html_resp.text
+    print("正在启动虚拟浏览器……")
+    with sync_playwright() as p:
+        # 启动一个无界面的 Chromium 浏览器
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
         
-        print("正在寻找 JS 数据文件路径……")
-        # 尝试匹配 JS 路径
-        js_match = re.search(r'/assets/my_dailyRead\.md\.[a-zA-Z0-9_-]+\.lean\.js', html)
-        if not js_match:
-            print("错误：在页面中没找到数据 JS 文件的链接！")
-            return None, None
-        
-        js_path = js_match.group(0)
-        js_url = base_url + js_path
-        print(f"找到数据源 URL: {js_url}")
-        
-        js_raw = requests.get(js_url, headers=headers, timeout=30).text
-        print("正在解析 JS 内容……")
-        
-        # 提取 JSON.parse 里的字符串
-        json_str_match = re.search(r"JSON\.parse\('(.*?)'\)", js_raw)
-        if not json_str_match:
-            print("错误：在 JS 文件里没找到 JSON 数据内容！")
-            return None, None
+        try:
+            print("正在访问目标网页……")
+            # 访问网页，并等待网络请求基本完成
+            page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
             
-        json_str = json_str_match.group(1)
-        
-        # 转换 Unicode 编码并解析
-        data = json.loads(json_str.encode().decode('unicode_escape'))
-        title = data.get('title', '每日晨读')
-        content = data.get('html', '')
-        
-        if not content:
-            print("错误：解析出的内容为空！")
-            return None, None
+            print("等待正文渲染……")
+            # 等待包含正文的 .vp-doc 容器出现
+            page.wait_for_selector(".vp-doc", timeout=10000)
             
-        print(f"成功抓取文章：{title}")
-        return title, content
-        
-    except Exception as e:
-        print(f"程序运行中发生异常: {e}")
-        return None, None
+            # 提取标题和内容
+            title = page.locator("h1").first.inner_text()
+            if not title:
+                title = "每日晨读"
+                
+            content = page.locator(".vp-doc").inner_html()
+            
+            print(f"抓取成功！标题：{title}")
+            return title, content
+            
+        except Exception as e:
+            print(f"抓取失败: {e}")
+            return None, None
+        finally:
+            browser.close()
 
 def make_rss(title, content):
     print("正在生成 atom.xml 文件……")
