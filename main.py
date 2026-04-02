@@ -55,42 +55,26 @@ def get_articles_and_update_history():
                     
                 print(f"正在抓取新文章: {unique_guid}")
                 try:
-                    # 确保没有对话框挡着
-                    page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
-                    page.wait_for_timeout(500)
+                    # 🌟 终极必杀技：不管三七二十一，每次抓新文章前，强制刷新网页回到列表页！
+                    page.goto(list_url, wait_until="networkidle")
+                    page.wait_for_selector(".article-meta", timeout=10000)
 
-                    # 🌟 修复：通过文本内容来精准定位卡片并点击
-                    # 找到包含该文章标题的元素，并点击它的父元素（卡片容器）
-                    escaped_title = info['title'].replace("'", "\\'")
-                    clicked = page.evaluate(f"""
-                        (targetTitle) => {{
-                            let elements = Array.from(document.querySelectorAll('.title, h2, h3, h4, .text-lg'));
-                            let el = elements.find(e => e.innerText.trim() === targetTitle);
-                            if (el && el.parentElement) {{
-                                el.parentElement.click();
-                                return true;
-                            }}
-                            return false;
-                        }}
-                    """, escaped_title)
-
-                    if not clicked:
-                        print(f"未能在页面上找到标题为 '{info['title']}' 的卡片，跳过。")
-                        continue
+                    # 网页刚刷新完，列表非常干净，根据索引点击绝不会错
+                    page.evaluate(f"document.querySelectorAll('.article-meta')[{info['index']}].parentElement.click()")
                     
+                    # 等待文章渲染
                     page.wait_for_timeout(3000)
                     
                     detail = page.evaluate("""
                         () => {
-                            let dialog = document.querySelector('.dialog') || document.body;
-                            let titleEl = dialog.querySelector('h1') || dialog.querySelector('.dialog-title');
+                            let titleEl = document.querySelector('h1') || document.querySelector('.title');
                             let title = titleEl ? titleEl.innerText.trim() : '';
                             
-                            let metaSpans = dialog.querySelectorAll('.meta-info span');
+                            let metaSpans = document.querySelectorAll('.meta-info span');
                             let source = metaSpans.length >= 1 ? metaSpans[0].innerText.trim() : '';
                             let theme = metaSpans.length >= 2 ? metaSpans[1].innerText.trim() : '';
                             
-                            let contentEl = dialog.querySelector('.answer-content') || dialog.querySelector('.content') || dialog.querySelector('.vp-doc');
+                            let contentEl = document.querySelector('.answer-content') || document.querySelector('.article-container .content') || document.querySelector('.vp-doc');
                             let contentHtml = '';
                             
                             if(contentEl) {
@@ -99,7 +83,7 @@ def get_articles_and_update_history():
                                 junk.forEach(s => clone.querySelectorAll(s).forEach(el => el.remove()));
                                 
                                 clone.querySelectorAll('div, p').forEach(el => {
-                                    if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题')) el.remove();
+                                    if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题') || el.innerText.includes('商业盈利')) el.remove();
                                 });
                                 contentHtml = clone.innerHTML.trim();
                             }
@@ -131,10 +115,6 @@ def get_articles_and_update_history():
                         })
                         new_items_count += 1
                         existing_guids.add(unique_guid)
-                    
-                    # 抓完必须关闭
-                    page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
-                    page.wait_for_timeout(1000)
 
                 except Exception as inner_e:
                     print(f"处理单篇异常: {inner_e}")
