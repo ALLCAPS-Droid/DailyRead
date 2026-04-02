@@ -21,7 +21,6 @@ def get_articles_and_update_history():
     new_items_count = 0
 
     with sync_playwright() as p:
-        # 启动无头浏览器
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         
@@ -29,27 +28,37 @@ def get_articles_and_update_history():
             print("正在访问文章列表页: https://saduck.top/my/dailyRead.html")
             page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
             
-            # 等待列表加载
             try:
                 page.wait_for_selector(".article-meta", timeout=15000)
             except:
-                print("未能在 15 秒内找到文章列表，页面可能响应缓慢或结构已改变。")
+                print("未能找到文章卡片，页面可能加载缓慢。")
             
-            # 提取所有文章链接
+            # 🌟 关键修复：扩大搜索范围，避免死等 .vp-doc，直接在主区域找 A 标签
             links = page.evaluate("""
                 () => {
                     let results = [];
-                    // 寻找包含 /my/ 或类似路径的文章链接
-                    document.querySelectorAll('.vp-doc a').forEach(a => {
-                        if(a.href && !results.includes(a.href) && !a.href.includes('#')) {
-                            results.push(a.href);
+                    let container = document.querySelector('#VPContent') || document.body;
+                    
+                    container.querySelectorAll('a').forEach(a => {
+                        let href = a.href;
+                        // 必须是有效 http 链接，且不能是纯锚点
+                        if (href && href.startsWith('http') && !href.includes('#')) {
+                            // 排除当前页面自己、以及底部的 el-pagination 翻页组件里的链接
+                            let isPagination = a.classList.contains('pager-link') || a.closest('.el-pagination');
+                            let isSelf = href === window.location.href || href === window.location.href.split('?')[0];
+                            
+                            if (!isPagination && !isSelf) {
+                                if (!results.includes(href)) {
+                                    results.push(href);
+                                }
+                            }
                         }
                     });
                     return results;
                 }
             """)
             
-            print(f"列表页共发现 {len(links)} 个潜在链接。")
+            print(f"列表页共发现 {len(links)} 个潜在文章链接。")
             
             # 2. 遍历链接，深入抓取新文章
             for link in reversed(links): 
@@ -60,9 +69,8 @@ def get_articles_and_update_history():
                 print(f"发现新文章，正在抓取全文: {link}")
                 try:
                     page.goto(link, wait_until="networkidle", timeout=20000)
-                    page.wait_for_timeout(2000) # 给页面一点时间渲染动画和样式
+                    page.wait_for_timeout(2000) # 给页面渲染的时间
                     
-                    # 提取纯净的 HTML 正文和排版数据
                     detail = page.evaluate("""
                         () => {
                             let titleEl = document.querySelector('h1') || document.querySelector('.title');
@@ -71,10 +79,11 @@ def get_articles_and_update_history():
                             let metaEl = document.querySelector('.article-meta') || document.querySelector('.read-time');
                             let metaText = metaEl ? metaEl.innerText.replace(/\\n/g, ' | ') : '每日晨读';
                             
+                            // 详情页正文通常在 .vp-doc 里
                             let contentEl = document.querySelector('.vp-doc');
                             if(contentEl) {
                                 let pager = contentEl.querySelector('.el-pagination');
-                                if(pager) pager.remove(); // 砍掉没用的翻页器
+                                if(pager) pager.remove();
                             }
                             let contentHtml = contentEl ? contentEl.innerHTML : '';
                             
@@ -86,7 +95,7 @@ def get_articles_and_update_history():
                         today = datetime.date.today().isoformat()
                         now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
                         
-                        # 3. 核心排版：给 RSS 专用的语义化 HTML
+                        # 3. RSS 专属 HTML 排版
                         beautiful_html = f"""
                         <blockquote>
                             <p>
@@ -99,7 +108,6 @@ def get_articles_and_update_history():
                         {detail['contentHtml']}
                         """
                         
-                        # 插入到记录的最前面
                         history.insert(0, {
                             "title": f"[{today}] {detail['title']}",
                             "link": link,
@@ -110,7 +118,7 @@ def get_articles_and_update_history():
                         new_items_count += 1
                         existing_links.add(link)
                     else:
-                        print(f"警告：文章 {link} 内容过短，可能抓取失败，已跳过。")
+                        print(f"警告：文章 {link} 内容过短，已跳过。")
                         
                 except Exception as inner_e:
                     print(f"抓取详情页 {link} 发生异常: {inner_e}")
@@ -120,9 +128,9 @@ def get_articles_and_update_history():
         finally:
             browser.close()
             
-    # 4. 【保险栓】只有当历史记录有内容时，才进行保存操作
+    # 4. 【保险栓】
     if len(history) > 0:
-        history = history[:30] # 只保留最新的 30 条
+        history = history[:30] 
         with open(history_file, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
         print("历史记录已安全保存至 history.json。")
@@ -137,7 +145,6 @@ def make_rss(history):
     
     items_xml = ""
     for item in history:
-        # 使用 CDATA 包裹 HTML 内容，防止被阅读器过滤破坏
         items_xml += f"""
   <item>
     <title><![CDATA[{item['title']}]]></title>
@@ -164,7 +171,6 @@ def make_rss(history):
 if __name__ == "__main__":
     history, new_count = get_articles_and_update_history()
     
-    # 【保险栓】只有当历史记录有内容时，才覆盖生成 RSS 文件
     if history and len(history) > 0:
         make_rss(history)
         print(f"✅ 任务全部完成！本次新增了 {new_count} 篇全文。历史库共存有 {len(history)} 篇文章。")
