@@ -9,23 +9,25 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 显式声明写入权限
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4 # 升级到 v4
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
+      # 注意这里变了，安装 playwright 及其浏览器内核
       - name: Install Dependencies
-        run: pip install requests
+        run: |
+          pip install playwright
+          playwright install chromium
 
       - name: Run Script
         run: python main.py
 
-      # 使用成熟的第三方动作代替手写 git 命令
       - name: Auto Commit
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
