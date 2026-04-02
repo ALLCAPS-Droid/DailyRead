@@ -32,4 +32,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "自动更新每日晨读 RSS"
-          file_pattern: 'atom.xml'
+          file_pattern: 'atom.xml history.json'
