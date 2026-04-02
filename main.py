@@ -16,7 +16,6 @@ def get_articles_and_update_history():
         except json.JSONDecodeError:
             history = []
             
-    # 使用 guid (日期+标题) 来作为唯一标识，即使没有独立链接也能精准排重
     existing_guids = {item.get('guid', '') for item in history}
     new_items_count = 0
 
@@ -35,7 +34,7 @@ def get_articles_and_update_history():
                 print("未能找到文章卡片，页面可能加载缓慢。")
                 return history, 0
 
-            # 🌟 关键修复 1：提取列表页的卡片基本信息（不找链接了）
+            # 获取列表上的卡片
             cards_info = page.evaluate("""
                 () => {
                     let results = [];
@@ -54,78 +53,96 @@ def get_articles_and_update_history():
                 }
             """)
             
-            print(f"列表页共发现 {len(cards_info)} 篇文章卡片。")
-            
-            # 2. 反向遍历，保证最新的排在 RSS 最前面
+            # 2. 遍历新文章
             for info in reversed(cards_info):
-                # 构建唯一标识
                 clean_date = info['date'].replace(' ', '') if info['date'] else datetime.date.today().isoformat()
                 unique_guid = f"{clean_date}-{info['title']}"
                 
                 if unique_guid in existing_guids:
-                    print(f"跳过已存在记录: {unique_guid}")
                     continue
                     
-                print(f"发现新文章，正在模拟鼠标点击进入: {unique_guid}")
+                print(f"正在抓取新文章: {unique_guid}")
                 try:
-                    # 确保我们在列表页
                     if page.url != list_url:
                         page.goto(list_url, wait_until="networkidle")
                         page.wait_for_selector(".article-meta", timeout=10000)
                     
-                    # 🌟 关键修复 2：模拟真实人类点击该卡片
+                    # 模拟点击
                     page.evaluate(f"""
                         (idx) => {{
                             let meta = document.querySelectorAll('.article-meta')[idx];
-                            if(meta && meta.parentElement) {{
-                                meta.parentElement.click();
-                            }}
+                            if(meta && meta.parentElement) meta.parentElement.click();
                         }}
                     """, info['index'])
                     
-                    # 等待文章渲染出来 (给 3 秒钟动画和请求时间)
                     page.wait_for_timeout(3000)
-                    
                     current_link = page.url
                     
-                    # 在详情页提取完整格式的 HTML
+                    # 🌟 核心：精准提取与深度 DOM 清洗
                     detail = page.evaluate("""
                         () => {
                             let titleEl = document.querySelector('h1') || document.querySelector('.title');
                             let title = titleEl ? titleEl.innerText.trim() : '';
                             
-                            let metaEl = document.querySelector('.article-meta') || document.querySelector('.read-time');
-                            let metaText = metaEl ? metaEl.innerText.replace(/\\n/g, ' | ') : '';
-                            
-                            let contentEl = document.querySelector('.vp-doc') || document.querySelector('.content') || document.querySelector('.el-dialog__body');
-                            if(contentEl) {
-                                let pager = contentEl.querySelector('.el-pagination');
-                                if(pager) pager.remove();
+                            // 精确提取「来源」和「主题」let sourceText = '';
+                            let themeText = '';
+                            let metaSpans = document.querySelectorAll('.meta-info span');
+                            if (metaSpans.length >= 2) {
+                                sourceText = metaSpans[0].innerText.trim();
+                                themeText = metaSpans[1].innerText.trim();
                             }
-                            let contentHtml = contentEl ? contentEl.innerHTML : '';
                             
-                            return { title, metaText, contentHtml };
+                            // 精确定位最核心的正文区，避开外围的喇叭、按钮和版权声明
+                            let contentEl = document.querySelector('.content') || document.querySelector('.answer-content') || document.querySelector('.vp-doc');
+                            let contentHtml = '';
+                            
+                            if(contentEl) {
+                                let clone = contentEl.cloneNode(true);
+                                
+                                // 黑名单：无情清除混入正文的垃圾元素
+                                let junkSelectors = [
+                                    'svg',                   // 干掉喇叭图案
+                                    '.dialog-overlay',       // 干掉收藏弹窗
+                                    '.back-button',          // 干掉底部按钮
+                                    '.el-pagination',        // 干掉翻页器
+                                    '.meta-info'             // 避免正文重复出现来源
+                                ];
+                                junkSelectors.forEach(selector => {
+                                    clone.querySelectorAll(selector).forEach(el => el.remove());
+                                });
+                                
+                                // 干掉免责声明文字
+                                clone.querySelectorAll('div, p').forEach(el => {
+                                    let txt = el.innerText || '';
+                                    if(txt.includes('信息来源于网络搜集') || txt.includes('不涉及商业盈利目的')) {
+                                        el.remove();
+                                    }
+                                });
+                                
+                                contentHtml = clone.innerHTML.trim();
+                            }
+                            return { title, sourceText, themeText, contentHtml };
                         }
                     """)
                     
-                    # 如果详情页没抓到标题，就用列表页的
                     final_title = detail['title'] if detail['title'] else info['title']
-                    final_meta = detail['metaText'] if detail['metaText'] else info['date']
                     
                     if detail['contentHtml'] and len(detail['contentHtml'].strip()) > 10:
                         now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
                         
-                        # 3. RSS 专属 HTML 排版
+                        # 🌟 核心排版：利用 table 实现左右分栏，干掉不需要的内容
                         beautiful_html = f"""
-                        <blockquote>
-                            <p>
-                                <strong>🏷️ 标签/时间：</strong> {final_meta} <br/>
-                                <strong>🔗 原文链接：</strong> <a href="{current_link}">点击在网页查看</a>
-                            </p>
-                        </blockquote>
-                        <hr/>
-                        <br/>
-                        {detail['contentHtml']}
+                        <div style="border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px;">
+                            <table width="100%" style="border: none; border-collapse: collapse;">
+                                <tr>
+                                    <td align="left" style="color: #666; font-size: 14px;">{detail['sourceText']}</td>
+                                    <td align="right" style="color: #666; font-size: 14px;">{detail['themeText']}</td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div style="font-size: 16px; line-height: 1.8; color: #333;">
+                            {detail['contentHtml']}
+                        </div>
                         """
                         
                         history.insert(0, {
@@ -137,8 +154,6 @@ def get_articles_and_update_history():
                         })
                         new_items_count += 1
                         existing_guids.add(unique_guid)
-                    else:
-                        print(f"警告：文章内容提取为空。")
                         
                 except Exception as inner_e:
                     print(f"处理第 {info['index']} 篇文章时发生异常: {inner_e}")
@@ -148,15 +163,11 @@ def get_articles_and_update_history():
         finally:
             browser.close()
             
-    # 4. 【保险栓】保存数据
     if len(history) > 0:
         history = history[:30] 
         with open(history_file, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
-        print("历史记录已安全保存至 history.json。")
-    else:
-        print("警告：抓取结束后历史记录为空，取消保存 history.json 以防数据丢失。")
-        
+            
     return history, new_items_count
 
 def make_rss(history):
@@ -179,20 +190,19 @@ def make_rss(history):
 <channel>
   <title>SaDuck 每日晨读</title>
   <link>https://saduck.top/my/dailyRead.html</link>
-  <description>自动抓取的公考晨读列表，包含完整格式、加黑重点与来源信息</description>
+  <description>自动抓取的公考晨读，纯净排版</description>
   <lastBuildDate>{now}</lastBuildDate>{items_xml}
 </channel>
 </rss>"""
 
     with open("atom.xml", "w", encoding="utf-8") as f:
         f.write(rss_template)
-    print("atom.xml 写入完成！")
 
 if __name__ == "__main__":
     history, new_count = get_articles_and_update_history()
     
     if history and len(history) > 0:
         make_rss(history)
-        print(f"✅ 任务全部完成！本次新增了 {new_count} 篇全文。历史库共存有 {len(history)} 篇文章。")
+        print(f"✅ 任务完成！本次新增 {new_count} 篇。")
     else:
-        print("❌ 警告：未获取到任何文章且历史库为空，跳过 XML 生成步骤。")
+        print("❌ 未获取到任何文章，跳过 XML 生成。")
