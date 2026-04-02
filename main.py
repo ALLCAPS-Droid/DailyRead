@@ -27,10 +27,8 @@ def get_articles_and_update_history():
             print(f"正在访问文章列表页……")
             page.goto(list_url, wait_until="networkidle", timeout=30000)
             
-            # 等待卡片加载
             page.wait_for_selector(".article-meta", timeout=15000)
 
-            # 获取所有卡片的基本信息
             cards_info = page.evaluate("""
                 () => {
                     let results = [];
@@ -47,7 +45,6 @@ def get_articles_and_update_history():
             
             print(f"列表页共发现 {len(cards_info)} 篇文章。")
             
-            # 2. 反向遍历（从旧到新抓取，确保插入 history 时最新的在最前）
             for info in reversed(cards_info):
                 clean_date = info['date'].replace(' ', '') if info['date'] else datetime.date.today().isoformat()
                 unique_guid = f"{clean_date}-{info['title']}"
@@ -58,20 +55,33 @@ def get_articles_and_update_history():
                     
                 print(f"正在抓取新文章: {unique_guid}")
                 try:
-                    # 🌟 核心修复 1：确保没有任何残留的对话框挡路
+                    # 确保没有对话框挡着
                     page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
                     page.wait_for_timeout(500)
 
-                    # 模拟点击卡片
-                    page.evaluate(f"document.querySelectorAll('.article-meta')[{info['index']}].parentElement.click()")
+                    # 🌟 修复：通过文本内容来精准定位卡片并点击
+                    # 找到包含该文章标题的元素，并点击它的父元素（卡片容器）
+                    escaped_title = info['title'].replace("'", "\\'")
+                    clicked = page.evaluate(f"""
+                        (targetTitle) => {{
+                            let elements = Array.from(document.querySelectorAll('.title, h2, h3, h4, .text-lg'));
+                            let el = elements.find(e => e.innerText.trim() === targetTitle);
+                            if (el && el.parentElement) {{
+                                el.parentElement.click();
+                                return true;
+                            }}
+                            return false;
+                        }}
+                    """, escaped_title)
+
+                    if not clicked:
+                        print(f"未能在页面上找到标题为 '{info['title']}' 的卡片，跳过。")
+                        continue
                     
-                    # 等待对话框内容加载
                     page.wait_for_timeout(3000)
                     
-                    # 🌟 核心修复 2：在对话框内精准抓取并清洗内容
                     detail = page.evaluate("""
                         () => {
-                            // 只在当前弹出的 dialog 里面找内容
                             let dialog = document.querySelector('.dialog') || document.body;
                             let titleEl = dialog.querySelector('h1') || dialog.querySelector('.dialog-title');
                             let title = titleEl ? titleEl.innerText.trim() : '';
@@ -85,11 +95,9 @@ def get_articles_and_update_history():
                             
                             if(contentEl) {
                                 let clone = contentEl.cloneNode(true);
-                                // 清理所有垃圾元素
                                 let junk = ['svg', '.dialog-overlay', '.back-button', '.el-pagination', '.meta-info', '.close-btn'];
                                 junk.forEach(s => clone.querySelectorAll(s).forEach(el => el.remove()));
                                 
-                                // 清理免责声明
                                 clone.querySelectorAll('div, p').forEach(el => {
                                     if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题')) el.remove();
                                 });
@@ -124,7 +132,7 @@ def get_articles_and_update_history():
                         new_items_count += 1
                         existing_guids.add(unique_guid)
                     
-                    # 🌟 核心修复 3：抓完后必须点击关闭按钮，回到列表状态
+                    # 抓完必须关闭
                     page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
                     page.wait_for_timeout(1000)
 
@@ -136,7 +144,6 @@ def get_articles_and_update_history():
         finally:
             browser.close()
             
-    # 4. 保留最近 30 条记录并保存
     if len(history) > 0:
         history = history[:30] 
         with open(history_file, "w", encoding="utf-8") as f:
