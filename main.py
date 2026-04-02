@@ -100,11 +100,11 @@ def get_articles_and_update_history():
                         now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
                         
                         beautiful_html = f"""
-                        <div style="border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px;">
-                            <table width="100%" style="border: none;">
+                        <div style="padding-bottom: 10px; margin-bottom: 15px;">
+                            <table width="100%" style="width: 100%; border: none; border-collapse: collapse;">
                                 <tr>
-                                    <td align="left" style="color: #666; font-size: 14px;">{detail['source']}</td>
-                                    <td align="right" style="color: #666; font-size: 14px;">{detail['theme']}</td>
+                                    <td align="left" style="color: #666; font-size: 14px; text-align: left;">{detail['source']}</td>
+                                    <td align="right" style="color: #666; font-size: 14px; text-align: right;">{detail['theme']}</td>
                                 </tr>
                             </table>
                         </div>
