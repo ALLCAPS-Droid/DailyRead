@@ -2,17 +2,17 @@ name: Auto Update RSS
 
 on:
   schedule:
-    - cron: '0 0 * * *' # 每天北京时间早上 8 点运行
-  workflow_dispatch:    # 允许手动运行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 显式声明写入权限
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # 升级到 v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,15 +25,9 @@ jobs:
       - name: Run Script
         run: python main.py
 
-      - name: Commit Changes
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          git add atom.xml
-          # 检查是否有文件变动，如果有才 commit 和 push
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Update RSS"
-            git push
-          fi
+      # 使用成熟的第三方动作代替手写 git 命令
+      - name: Auto Commit
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "自动更新每日晨读 RSS"
+          file_pattern: 'atom.xml'
