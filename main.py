@@ -4,7 +4,6 @@ from playwright.sync_api import sync_playwright
 def get_content():
     print("正在启动虚拟浏览器……")
     with sync_playwright() as p:
-        # 启动一个无界面的 Chromium 浏览器
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         
@@ -14,15 +13,24 @@ def get_content():
             page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
             
             print("等待正文渲染……")
-            # 等待包含正文的 .vp-doc 容器出现
-            page.wait_for_selector(".vp-doc", timeout=10000)
+            # 关键修复：不要等 .vp-doc 容器，而是等容器里的实质性内容（如段落 p 标签）加载出来
+            try:
+                page.wait_for_selector(".vp-doc p", timeout=10000)
+            except:
+                # 如果连 p 标签都没有，强制等 3 秒让 JS 跑完
+                page.wait_for_timeout(3000)
             
-            # 提取标题和内容
-            title = page.locator("h1").first.inner_text()
-            if not title:
-                title = "每日晨读"
+            # 放弃寻找 h1，直接获取网页原生 title（例如 "每日晨读 | SaDuck - 公考知识库"）
+            raw_title = page.title()
+            title = raw_title.split('|')[0].strip() if '|' in raw_title else "每日晨读"
                 
+            # 提取 HTML 正文
             content = page.locator(".vp-doc").inner_html()
+            
+            # 防御性检查：如果抓到的内容太短，说明没加载出真实内容
+            if not content or len(content.strip()) < 50:
+                print("错误：抓取到的正文太短或为空，页面可能未完全加载。")
+                return None, None
             
             print(f"抓取成功！标题：{title}")
             return title, content
