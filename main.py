@@ -53,24 +53,23 @@ def get_articles_and_update_history():
                     # 稍微等一下正文渲染
                     page.wait_for_timeout(2000) 
                     
-                    # 在详情页提取所有元素（包括加黑标签 <strong> 和来源）
+                    # 在详情页提取并「净化」为标准 HTML
                     detail = page.evaluate("""
                         () => {
-                            // 提取标题
                             let titleEl = document.querySelector('h1') || document.querySelector('.title');
                             let title = titleEl ? titleEl.innerText.trim() : document.title.split('|')[0].trim();
                             
-                            // 提取来源、主题、日期等元数据 (把换行改成空格)
                             let metaEl = document.querySelector('.article-meta') || document.querySelector('.read-time');
                             let metaText = metaEl ? metaEl.innerText.replace(/\\n/g, ' | ') : '每日晨读';
                             
-                            // 提取完整正文 (VitePress 的正文都在 .vp-doc 里，innerHTML 会保留 <strong> 加黑标签)
                             let contentEl = document.querySelector('.vp-doc');
-                            // 移除没用的翻页按钮，保持 RSS 干净
                             if(contentEl) {
+                                // 移除没用的按钮
                                 let pager = contentEl.querySelector('.el-pagination');
                                 if(pager) pager.remove();
                             }
+                            
+                            // 提取纯净的 HTML
                             let contentHtml = contentEl ? contentEl.innerHTML : '未找到正文内容';
                             
                             return { title, metaText, contentHtml };
@@ -81,18 +80,18 @@ def get_articles_and_update_history():
                         today = datetime.date.today().isoformat()
                         now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
                         
-                        # 3. 核心：给 RSS 穿上排版外衣！
-                        # 这里我们用原生的 HTML 加上一点好看的颜色和边框，把来源和主题凸显出来
+                        # 3. 核心：专为 RSS 阅读器优化的原生标签排版！
+                        # 不使用任何 CSS style，而是使用 blockquote, hr, strong 等原生标签
                         beautiful_html = f"""
-                        <div style="background-color: #f4f6f8; padding: 15px; border-left: 5px solid #2081E2; border-radius: 4px; margin-bottom: 20px;">
-                            <p style="margin: 0; font-size: 14px; color: #555;">
-                                <strong style="color: #333;">🏷️ 标签/来源：</strong> {detail['metaText']} <br/>
-                                <strong style="color: #333;">🔗 原文链接：</strong> <a href="{link}">点击在网页查看</a>
+                        <blockquote>
+                            <p>
+                                <strong>🏷️ 标签/来源：</strong> {detail['metaText']} <br/>
+                                <strong>🔗 原文链接：</strong> <a href="{link}">点击在网页查看</a>
                             </p>
-                        </div>
-                        <div style="font-size: 16px; line-height: 1.8; color: #333;">
-                            {detail['contentHtml']}
-                        </div>
+                        </blockquote>
+                        <hr/>
+                        <br/>
+                        {detail['contentHtml']}
                         """
                         
                         # 存入历史记录最前面
