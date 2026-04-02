@@ -3,113 +3,131 @@ import json
 import os
 from playwright.sync_api import sync_playwright
 
-def get_content():
+def get_articles_and_update_history():
     print("正在启动虚拟浏览器……")
-    articles = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        
-        try:
-            print("正在访问目标网页……")
-            page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
-            
-            print("等待文章列表加载……")
-            # 等待带有时间的 meta 标签出现，证明列表已经渲染完毕
-            page.wait_for_selector(".article-meta", timeout=15000)
-            
-            # 使用 JS 在浏览器内部抓取整个列表
-            articles = page.evaluate("""
-                () => {
-                    let results = [];
-                    // 找到所有的文章元数据块
-                    let metas = document.querySelectorAll('.article-meta');
-                    
-                    metas.forEach(meta => {
-                        // 往上找父节点，通常这就是单个文章的卡片容器
-                        let card = meta.parentElement.parentElement;
-                        
-                        // 提取日期 (从你发给我的源码里看到 class 是 article-date)
-                        let dateEl = meta.querySelector('.article-date');
-                        let dateText = dateEl ? dateEl.innerText.trim() : '';
-                        
-                        // 提取标题 (猜测通常会比较显眼，可能是 h2/h3 或者是最大的 a 标签)
-                        let titleEl = card.querySelector('.title, h2, h3, h4, .text-lg'); 
-                        let title = titleEl ? titleEl.innerText.trim() : '每日晨读';
-                        
-                        // 提取链接
-                        let aTag = card.querySelector('a');
-                        let link = aTag ? aTag.href : window.location.href;
-                        
-                        // 提取简介 (如果有的话)
-                        let contentEl = card.querySelector('.content, .desc, .summary, p');
-                        let content = contentEl ? contentEl.innerHTML : '请点击标题前往网站查看。';
-                        
-                        results.push({
-                            title: title,
-                            date: dateText,
-                            link: link,
-                            content: content
-                        });
-                    });
-                    return results;
-                }
-            """)
-            
-            print(f"抓取成功！本页共找到 {len(articles)} 篇文章。")
-            return articles
-            
-        except Exception as e:
-            print(f"抓取失败: {e}")
-            return []
-        finally:
-            browser.close()
-
-def make_rss(articles):
-    print("正在处理历史记录并生成 RSS……")
-    now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
-    
-    # 1. 读取历史记录
     history_file = "history.json"
+    
+    # 1. 加载本地历史记录
     history = []
     if os.path.exists(history_file):
         with open(history_file, "r", encoding="utf-8") as f:
             history = json.load(f)
             
-    # 用一个集合来存已经抓过的唯一标识（日期+标题），防止重复
-    existing_keys = {f"{item.get('date', '')}-{item['title']}" for item in history}
-    
-    # 2. 遍历新抓到的这 6 篇文章，把没见过的加入历史
+    existing_links = {item.get('link', '') for item in history}
     new_items_count = 0
-    # 倒序遍历，保证最新的文章插在最前面时顺序是对的
-    for item in reversed(articles):
-        # 把 HTML 里的特殊字符清理一下
-        clean_date = item['date'].replace(' ', '') if item['date'] else datetime.date.today().isoformat()
-        unique_key = f"{clean_date}-{item['title']}"
-        display_title = f"[{clean_date}] {item['title']}"
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
         
-        if unique_key not in existing_keys:
-            history.insert(0, {
-                "title": display_title,
-                "date": clean_date,
-                "link": item['link'],
-                "description": item['content'],
-                "pubDate": now,
-                "guid": unique_key # 使用唯一标识作为 GUID
-            })
-            new_items_count += 1
-            existing_keys.add(unique_key)
+        try:
+            print("正在访问文章列表页……")
+            # 访问列表页
+            page.goto("https://saduck.top/my/dailyRead.html", wait_until="networkidle", timeout=30000)
+            page.wait_for_selector(".article-meta", timeout=15000)
             
-    # 3. 只保留最近 30 篇文章的历史
+            # 获取列表上的所有文章链接
+            links = page.evaluate("""
+                () => {
+                    let results = [];
+                    // 找到所有卡片里的链接
+                    document.querySelectorAll('.vp-doc a').forEach(a => {
+                        if(a.href && !results.includes(a.href) && !a.href.includes('#')) {
+                            results.push(a.href);
+                        }
+                    });
+                    return results;
+                }
+            """)
+            
+            print(f"列表页共发现 {len(links)} 个潜在链接。")
+            
+            # 2. 遍历链接，只深入抓取「没见过」的新文章
+            for link in reversed(links): # 倒序遍历，保证最新的在上面
+                if link in existing_links:
+                    continue # 如果在历史记录里，直接跳过，节省时间
+                    
+                print(f"发现新文章，正在进入详情页抓取: {link}")
+                try:
+                    page.goto(link, wait_until="networkidle", timeout=20000)
+                    # 稍微等一下正文渲染
+                    page.wait_for_timeout(2000) 
+                    
+                    # 在详情页提取所有元素（包括加黑标签 <strong> 和来源）
+                    detail = page.evaluate("""
+                        () => {
+                            // 提取标题
+                            let titleEl = document.querySelector('h1') || document.querySelector('.title');
+                            let title = titleEl ? titleEl.innerText.trim() : document.title.split('|')[0].trim();
+                            
+                            // 提取来源、主题、日期等元数据 (把换行改成空格)
+                            let metaEl = document.querySelector('.article-meta') || document.querySelector('.read-time');
+                            let metaText = metaEl ? metaEl.innerText.replace(/\\n/g, ' | ') : '每日晨读';
+                            
+                            // 提取完整正文 (VitePress 的正文都在 .vp-doc 里，innerHTML 会保留 <strong> 加黑标签)
+                            let contentEl = document.querySelector('.vp-doc');
+                            // 移除没用的翻页按钮，保持 RSS 干净
+                            if(contentEl) {
+                                let pager = contentEl.querySelector('.el-pagination');
+                                if(pager) pager.remove();
+                            }
+                            let contentHtml = contentEl ? contentEl.innerHTML : '未找到正文内容';
+                            
+                            return { title, metaText, contentHtml };
+                        }
+                    """)
+                    
+                    if detail['contentHtml']:
+                        today = datetime.date.today().isoformat()
+                        now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
+                        
+                        # 3. 核心：给 RSS 穿上排版外衣！
+                        # 这里我们用原生的 HTML 加上一点好看的颜色和边框，把来源和主题凸显出来
+                        beautiful_html = f"""
+                        <div style="background-color: #f4f6f8; padding: 15px; border-left: 5px solid #2081E2; border-radius: 4px; margin-bottom: 20px;">
+                            <p style="margin: 0; font-size: 14px; color: #555;">
+                                <strong style="color: #333;">🏷️ 标签/来源：</strong> {detail['metaText']} <br/>
+                                <strong style="color: #333;">🔗 原文链接：</strong> <a href="{link}">点击在网页查看</a>
+                            </p>
+                        </div>
+                        <div style="font-size: 16px; line-height: 1.8; color: #333;">
+                            {detail['contentHtml']}
+                        </div>
+                        """
+                        
+                        # 存入历史记录最前面
+                        history.insert(0, {
+                            "title": f"[{today}] {detail['title']}",
+                            "link": link,
+                            "description": beautiful_html, # 存入排版好的代码
+                            "pubDate": now,
+                            "guid": link
+                        })
+                        new_items_count += 1
+                        existing_links.add(link)
+                        
+                except Exception as inner_e:
+                    print(f"抓取详情页 {link} 失败: {inner_e}")
+                    
+        except Exception as e:
+            print(f"抓取列表页失败: {e}")
+        finally:
+            browser.close()
+            
+    # 4. 限制并保存历史记录
     history = history[:30]
-    
-    # 4. 把更新后的历史保存起来
     with open(history_file, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+        
+    return history, new_items_count
 
-    # 5. 拼装最终的 XML
+def make_rss(history):
+    print("正在生成 atom.xml 文件……")
+    now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
+    
     items_xml = ""
     for item in history:
+        # 注意：这里必须用 <![CDATA[ …… ]]> 把 HTML 包裹起来，阅读器才会正确渲染排版和加黑
         items_xml += f"""
   <item>
     <title><![CDATA[{item['title']}]]></title>
@@ -122,20 +140,20 @@ def make_rss(articles):
     rss_template = f"""<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0">
 <channel>
-  <title>SaDuck 每日晨读列表</title>
+  <title>SaDuck 每日晨读列表 (全文精排版)</title>
   <link>https://saduck.top/my/dailyRead.html</link>
-  <description>自动抓取的公考晨读列表，最高保留 30 条记录</description>
+  <description>自动抓取的公考晨读列表，包含完整格式、加黑重点与来源信息</description>
   <lastBuildDate>{now}</lastBuildDate>{items_xml}
 </channel>
 </rss>"""
 
     with open("atom.xml", "w", encoding="utf-8") as f:
         f.write(rss_template)
-    print(f"文件写入完成！本次新增 {new_items_count} 篇文章，当前源中共有 {len(history)} 篇文章。")
 
 if __name__ == "__main__":
-    articles = get_content()
-    if articles:
-        make_rss(articles)
+    history, new_count = get_articles_and_update_history()
+    if len(history) > 0:
+        make_rss(history)
+        print(f"✅ 任务完成！本次新增了 {new_count} 篇全文文章。")
     else:
-        print("由于没抓到有效内容，跳过 XML 生成步骤。")
+        print("未获取到任何文章。")
