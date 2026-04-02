@@ -7,13 +7,12 @@ def get_articles_and_update_history():
     print("正在启动虚拟浏览器……")
     history_file = "history.json"
     
-    # 1. 安全加载本地历史记录
     history = []
     if os.path.exists(history_file):
         try:
             with open(history_file, "r", encoding="utf-8") as f:
                 history = json.load(f)
-        except json.JSONDecodeError:
+        except:
             history = []
             
     existing_guids = {item.get('guid', '') for item in history}
@@ -25,168 +24,129 @@ def get_articles_and_update_history():
         
         try:
             list_url = "https://saduck.top/my/dailyRead.html"
-            print(f"正在访问文章列表页: {list_url}")
+            print(f"正在访问文章列表页……")
             page.goto(list_url, wait_until="networkidle", timeout=30000)
             
-            try:
-                page.wait_for_selector(".article-meta", timeout=15000)
-            except:
-                print("未能找到文章卡片，页面可能加载缓慢。")
-                return history, 0
+            # 等待卡片加载
+            page.wait_for_selector(".article-meta", timeout=15000)
 
-            # 提取列表页的卡片基本信息
+            # 获取所有卡片的基本信息
             cards_info = page.evaluate("""
                 () => {
                     let results = [];
                     let metas = document.querySelectorAll('.article-meta');
                     metas.forEach((meta, index) => {
                         let card = meta.parentElement;
-                        let dateEl = meta.querySelector('.article-date');
-                        let dateText = dateEl ? dateEl.innerText.trim() : '';
-                        
-                        let titleEl = card.querySelector('.title, h2, h3, h4, .text-lg');
-                        let titleText = titleEl ? titleEl.innerText.trim() : `每日晨读_${index}`;
-                        
+                        let dateText = meta.querySelector('.article-date')?.innerText.trim() || '';
+                        let titleText = card.querySelector('.title, h2, h3, h4, .text-lg')?.innerText.trim() || `文章_${index}`;
                         results.push({ index: index, date: dateText, title: titleText });
                     });
                     return results;
                 }
             """)
             
-            print(f"列表页共发现 {len(cards_info)} 篇文章卡片。")
+            print(f"列表页共发现 {len(cards_info)} 篇文章。")
             
-            # 2. 反向遍历，保证最新的排在 RSS 最前面
+            # 2. 反向遍历（从旧到新抓取，确保插入 history 时最新的在最前）
             for info in reversed(cards_info):
                 clean_date = info['date'].replace(' ', '') if info['date'] else datetime.date.today().isoformat()
                 unique_guid = f"{clean_date}-{info['title']}"
                 
                 if unique_guid in existing_guids:
+                    print(f"跳过已存在记录: {unique_guid}")
                     continue
                     
-                print(f"发现新文章，正在模拟鼠标点击进入: {unique_guid}")
+                print(f"正在抓取新文章: {unique_guid}")
                 try:
-                    # 确保我们在列表页
-                    if page.url != list_url:
-                        page.goto(list_url, wait_until="networkidle")
-                        page.wait_for_selector(".article-meta", timeout=10000)
+                    # 🌟 核心修复 1：确保没有任何残留的对话框挡路
+                    page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
+                    page.wait_for_timeout(500)
+
+                    # 模拟点击卡片
+                    page.evaluate(f"document.querySelectorAll('.article-meta')[{info['index']}].parentElement.click()")
                     
-                    # 模拟真实人类点击该卡片
-                    page.evaluate(f"""
-                        (idx) => {{
-                            let meta = document.querySelectorAll('.article-meta')[idx];
-                            if(meta && meta.parentElement) {{
-                                meta.parentElement.click();
-                            }}
-                        }}
-                    """, info['index'])
-                    
-                    # 等待文章渲染出来 (给 3 秒钟动画和请求时间)
+                    # 等待对话框内容加载
                     page.wait_for_timeout(3000)
-                    current_link = page.url
                     
-                    # 🌟 核心修复与深度 DOM 清洗
+                    # 🌟 核心修复 2：在对话框内精准抓取并清洗内容
                     detail = page.evaluate("""
                         () => {
-                            let titleEl = document.querySelector('h1') || document.querySelector('.title');
+                            // 只在当前弹出的 dialog 里面找内容
+                            let dialog = document.querySelector('.dialog') || document.body;
+                            let titleEl = dialog.querySelector('h1') || dialog.querySelector('.dialog-title');
                             let title = titleEl ? titleEl.innerText.trim() : '';
                             
-                            // 精确提取「来源」和「主题」let sourceText = '';
-                            let themeText = '';
-                            let metaSpans = document.querySelectorAll('.meta-info span');
-                            if (metaSpans.length >= 2) {
-                                sourceText = metaSpans[0].innerText.trim();
-                                themeText = metaSpans[1].innerText.trim();
-                            }
+                            let metaSpans = dialog.querySelectorAll('.meta-info span');
+                            let source = metaSpans.length >= 1 ? metaSpans[0].innerText.trim() : '';
+                            let theme = metaSpans.length >= 2 ? metaSpans[1].innerText.trim() : '';
                             
-                            // 🌟 核心修复：精确定位真正的正文区，坚决避开顶部导航栏
-                            let contentEl = document.querySelector('.answer-content') || document.querySelector('.article-container .content') || document.querySelector('.vp-doc');
+                            let contentEl = dialog.querySelector('.answer-content') || dialog.querySelector('.content') || dialog.querySelector('.vp-doc');
                             let contentHtml = '';
                             
                             if(contentEl) {
                                 let clone = contentEl.cloneNode(true);
+                                // 清理所有垃圾元素
+                                let junk = ['svg', '.dialog-overlay', '.back-button', '.el-pagination', '.meta-info', '.close-btn'];
+                                junk.forEach(s => clone.querySelectorAll(s).forEach(el => el.remove()));
                                 
-                                // 黑名单：无情清除混入正文的垃圾元素
-                                let junkSelectors = [
-                                    'svg',                   // 干掉喇叭图案和所有图标
-                                    '.dialog-overlay',       // 干掉收藏弹窗
-                                    '.back-button',          // 干掉底部按钮
-                                    '.el-pagination',        // 干掉翻页器
-                                    '.meta-info',            // 避免正文重复出现来源
-                                    '.vitepress-backTop-main'// 干掉返回顶部
-                                ];
-                                junkSelectors.forEach(selector => {
-                                    clone.querySelectorAll(selector).forEach(el => el.remove());
-                                });
-                                
-                                // 干掉免责声明文字
+                                // 清理免责声明
                                 clone.querySelectorAll('div, p').forEach(el => {
-                                    let txt = el.innerText || '';
-                                    if(txt.includes('信息来源于网络搜集') || txt.includes('仅供学习交流使用') || txt.includes('不涉及商业盈利目的')) {
-                                        el.remove();
-                                    }
+                                    if(el.innerText.includes('信息来源于网络') || el.innerText.includes('版权问题')) el.remove();
                                 });
-                                
                                 contentHtml = clone.innerHTML.trim();
                             }
-                            return { title, sourceText, themeText, contentHtml };
+                            return { title, source, theme, contentHtml };
                         }
                     """)
                     
-                    final_title = detail['title'] if detail['title'] else info['title']
-                    
-                    if detail['contentHtml'] and len(detail['contentHtml'].strip()) > 10:
+                    if detail['contentHtml'] and len(detail['contentHtml']) > 20:
                         now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
                         
-                        # 🌟 极致纯净排版：利用 table 实现左右分栏，干掉不需要的标签
                         beautiful_html = f"""
                         <div style="border-bottom: 1px dashed #ccc; padding-bottom: 10px; margin-bottom: 15px;">
-                            <table width="100%" style="border: none; border-collapse: collapse;">
+                            <table width="100%" style="border: none;">
                                 <tr>
-                                    <td align="left" style="color: #666; font-size: 14px;">{detail['sourceText']}</td>
-                                    <td align="right" style="color: #666; font-size: 14px;">{detail['themeText']}</td>
+                                    <td align="left" style="color: #666;">{detail['source']}</td>
+                                    <td align="right" style="color: #666;">{detail['theme']}</td>
                                 </tr>
                             </table>
                         </div>
-                        <div style="font-size: 16px; line-height: 1.8; color: #333;">
-                            {detail['contentHtml']}
-                        </div>
+                        <div style="line-height: 1.8;">{detail['contentHtml']}</div>
                         """
                         
                         history.insert(0, {
-                            "title": f"[{clean_date}] {final_title}",
-                            "link": current_link,
+                            "title": f"[{clean_date}] {detail['title'] or info['title']}",
+                            "link": f"{list_url}?guid={unique_guid}",
                             "description": beautiful_html,
                             "pubDate": now,
                             "guid": unique_guid
                         })
                         new_items_count += 1
                         existing_guids.add(unique_guid)
-                    else:
-                        print(f"警告：文章内容提取为空。")
-                        
+                    
+                    # 🌟 核心修复 3：抓完后必须点击关闭按钮，回到列表状态
+                    page.evaluate("() => { let btn = document.querySelector('.close-btn'); if(btn) btn.click(); }")
+                    page.wait_for_timeout(1000)
+
                 except Exception as inner_e:
-                    print(f"处理第 {info['index']} 篇文章时发生异常: {inner_e}")
+                    print(f"处理单篇异常: {inner_e}")
                     
         except Exception as e:
-            print(f"抓取主流程发生异常: {e}")
+            print(f"主流程异常: {e}")
         finally:
             browser.close()
             
-    # 4. 【保险栓】保存数据
+    # 4. 保留最近 30 条记录并保存
     if len(history) > 0:
         history = history[:30] 
         with open(history_file, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
-        print("历史记录已安全保存至 history.json。")
-    else:
-        print("警告：抓取结束后历史记录为空，取消保存 history.json 以防数据丢失。")
-        
+            
     return history, new_items_count
 
 def make_rss(history):
-    print("开始生成 atom.xml 订阅源……")
+    print(f"正在生成 RSS，共 {len(history)} 篇文章……")
     now = datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")
-    
     items_xml = ""
     for item in history:
         items_xml += f"""
@@ -198,25 +158,20 @@ def make_rss(history):
     <guid>{item['guid']}</guid>
   </item>"""
 
-    rss_template = f"""<?xml version="1.0" encoding="UTF-8" ?>
+    rss = f"""<?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0">
 <channel>
   <title>SaDuck 每日晨读</title>
   <link>https://saduck.top/my/dailyRead.html</link>
-  <description>自动抓取的公考晨读，纯净排版</description>
+  <description>纯净版公考晨读</description>
   <lastBuildDate>{now}</lastBuildDate>{items_xml}
 </channel>
 </rss>"""
-
     with open("atom.xml", "w", encoding="utf-8") as f:
-        f.write(rss_template)
-    print("atom.xml 写入完成！")
+        f.write(rss)
 
 if __name__ == "__main__":
-    history, new_count = get_articles_and_update_history()
-    
-    if history and len(history) > 0:
-        make_rss(history)
-        print(f"✅ 任务全部完成！本次新增了 {new_count} 篇全文。历史库共存有 {len(history)} 篇文章。")
-    else:
-        print("❌ 警告：未获取到任何文章且历史库为空，跳过 XML 生成步骤。")
+    h, count = get_articles_and_update_history()
+    if h:
+        make_rss(h)
+        print(f"✅ 完成！新增 {count} 篇。")
