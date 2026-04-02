@@ -21,6 +21,7 @@ DailyRead/
 ├── main.py             # 核心抓取、清洗与 RSS 生成脚本
 ├── history.json        # 历史抓取记录库（自动维护）
 └── atom.xml            # 最终的 RSS 订阅源文件（自动生成）
+```
 
 ## 🛠️ 如何使用（专属部署）
 
